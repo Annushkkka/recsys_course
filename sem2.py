@@ -42,7 +42,19 @@ def jaccard_similarity(a: np.array, b: np.array) -> float:
 
     Это значение в диапазоне [0,1].
     """
-    raise(NotImplementedError("Реализуйте функцию jaccard_similarity"))
+    # 1) Преобразуем векторы рейтингов пользователей a и b в бинарные маски
+    a_bin = a > 0
+    b_bin = b > 0
+
+    # 2) Вычисляем пересечение бинарных масок (логическое AND).
+    intersection = np.logical_and(a_bin, b_bin).sum()
+    # 3) Вычисляем объединение бинарных масок (логическое OR).
+    union = np.logical_or(a_bin, b_bin).sum()
+
+    if union == 0:
+        return 0.0
+
+    return float(intersection / union)
 
 
 def build_user_user_matrix(user_item_matrix: np.ndarray) -> np.ndarray:
@@ -65,7 +77,30 @@ def build_user_user_matrix(user_item_matrix: np.ndarray) -> np.ndarray:
     Returns:
         Матрица схожести Жаккара (n_users, n_users).
     """
-    raise(NotImplementedError("Реализуйте функцию build_user_user_matrix"))
+    # 1) Преобразуем user_item_matrix в бинарную матрицу X (1 если оценено, иначе 0).
+    X = (user_item_matrix > 0).astype(np.float32)
+
+    # 2) Пересечение между каждой парой пользователей = X @ X.T.
+    intersection = X @ X.T
+
+    # 3) Для каждого пользователя считаем количество оцененных фильмов (суммы строк).
+    row_sums = X.sum(axis=1)
+
+    # 4) Объединение вычисляем как |A| + |B| - |A ∩ B|.
+    union = row_sums[:, None] + row_sums[None, :] - intersection
+
+    # 6) Делим intersection / union.
+    similarity = np.divide(
+        intersection,
+        union,
+        out=np.zeros_like(intersection, dtype=float),
+        where=union != 0,
+    )
+
+    # 5) Корректируем диагональ (избегаем деления на ноль и выставляем 1 на диагонали).
+    np.fill_diagonal(similarity, 1.0)
+
+    return similarity
 
 
 def predict_rating(
@@ -98,7 +133,38 @@ def predict_rating(
     Returns:
         Предсказанный рейтинг (float).
     """
-    raise(NotImplementedError("Реализуйте функцию predict_rating"))
+    # 1) Берём все рейтинги фильма item_id от всех пользователей.
+    item_ratings = user_item_matrix[:, item_id]
+
+    # 2) Берём строку из матрицы схожести, соответствующую активному пользователю.
+    sims = user_user_matrix[user_id].copy()
+
+    # 3) Фильтруем пользователей, оставляем тех, которые оценили item_id.
+    rated_mask = item_ratings > 0
+
+    # 7) Если sum_sim=0 или никто не оценил фильм, возвращаем 0.0.
+    if not np.any(rated_mask):
+        return 0.0
+
+    # 4) Сортируем оставшихся по сходству с активным пользователем.
+    neighbor_ids = np.where(rated_mask)[0]
+    neighbor_sims = sims[neighbor_ids]
+    order = np.argsort(neighbor_sims)[::-1]
+
+    # 5) Берём top-k наиболее похожих.
+    neighbor_ids = neighbor_ids[order][:topk]
+    neighbor_sims = user_user_matrix[user_id, neighbor_ids]
+    neighbor_ratings = user_item_matrix[neighbor_ids, item_id]
+
+    # 6) Предсказываем рейтинг как взвешенное среднее с учетом сходства пользователей.
+    sum_sim = neighbor_sims.sum()
+
+    # 7) Если sum_sim=0 или никто не оценил фильм, возвращаем 0.0.
+    if sum_sim == 0:
+        return 0.0
+
+    pred = np.dot(neighbor_sims, neighbor_ratings) / sum_sim
+    return float(pred)
 
 
 def predict_items_for_user(
@@ -133,8 +199,48 @@ def predict_items_for_user(
     Returns:
         Список рекомендованных индексов фильмов (item_id).
     """
-    raise(NotImplementedError("Реализуйте функцию predict_items_for_user"))
+    # 1) Берём строку из матрицы схожести,
+    # получаем вектор сходства активного пользователя со всеми пользователями.
+    # 2) Исключаем самого пользователя, выбираем top-r наиболее похожих.
+    similarities = user_user_matrix[user_id]
+    similarities_copy = similarities.copy()
+    similarities_copy[user_id] = -1
 
+    top_r_users = np.argsort(similarities_copy)[-r:]
+
+    # 3) Берём все фильмы, оцененные этими соседями >= 4.0.
+    high_rated_movies = {}
+
+    for neighbor in top_r_users:
+        neighbor_ratings = user_item_matrix[neighbor]
+        highly_rated_indices = np.where(neighbor_ratings >= 4.0)[0]
+
+        for movie_idx in highly_rated_indices:
+            high_rated_movies.setdefault(movie_idx, []).append(
+                neighbor_ratings[movie_idx]
+            )
+
+    # 5) Удаляем фильмы, которые пользователь уже оценил.
+    user_rated = user_item_matrix[user_id] > 0
+
+    # 4) Для каждого кандидата считаем средний рейтинг среди соседей.
+    candidates = {
+        movie_idx: np.mean(ratings)
+        for movie_idx, ratings in high_rated_movies.items()
+        if not user_rated[movie_idx]
+    }
+
+    # 6) Сортируем по среднему рейтингу в убывании.
+    sorted_candidates = sorted(
+        candidates.items(),
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    # 7) Возвращаем top-k индексов фильмов.
+    recommended_items = [int(movie_idx) for movie_idx, _ in sorted_candidates[:k]]
+
+    return recommended_items
 
 if __name__ == "__main__":
     # Загрузка данных
