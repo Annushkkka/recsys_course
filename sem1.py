@@ -14,7 +14,7 @@
 
 import numpy as np
 
-from utils import load_data
+from utils import load_data, accuracy
 
 
 def random_recommend(n_recommendations: int = 10, seed: int = 42) -> list[int]:
@@ -62,7 +62,40 @@ def top_n_recommend(
     Returns:
         Список кортежей (movieId, avg_rating, rating_count, title).
     """
-    raise(NotImplementedError("Реализуйте функцию top_n_recommend"))
+    # 1) Загружаем данные ratings и movies.
+    ratings_df, movies_df = load_data()
+
+    # 2) Группируем по movieId и считаем средний рейтинг и число оценок.
+    movie_stats = (
+        ratings_df.groupby("movieId")["rating"]
+        .agg(["mean", "count"])
+        .reset_index()
+        .rename(columns={"mean": "avg_rating", "count": "rating_count"})
+    )
+
+    # 3) Фильтруем фильмы с rating_count >= min_ratings.
+    movie_stats = movie_stats[movie_stats["rating_count"] >= min_ratings]
+
+    # 4) Сортируем по avg_rating и rating_count по убыванию.
+    movie_stats = movie_stats.sort_values(
+        by=["avg_rating", "rating_count"],
+        ascending=[False, False]
+    )
+
+    # 5) Берём top-n и добавляем названия фильмов.
+    top_movies = movie_stats.head(n_recommendations)
+    top_movies = top_movies.merge(
+        movies_df[["movieId", "title"]],
+        on="movieId",
+        how="left"
+    )
+
+    recommendations = [
+        (int(row["movieId"]), float(row["avg_rating"]), int(row["rating_count"]), row["title"])
+        for _, row in top_movies.iterrows()
+    ]
+
+    return recommendations
 
 
 def evaluate_rec_systems(
@@ -86,7 +119,32 @@ def evaluate_rec_systems(
     Returns:
         Словарь {'random_accuracy', 'popular_accuracy'}.
     """
-    raise(NotImplementedError("Реализуйте функцию evaluate_rec_systems"))
+    
+    # 1) Получаем рекомендации случайных фильмов (random_recommend).
+    ratings_df, _ = load_data()
+
+    # 2) Получаем рекомендации популярных фильмов (top_n_recommend).
+    random_recs = random_recommend(
+        n_recommendations=n_recommendations,
+        seed=random_state
+    )
+    popular_recs = top_n_recommend(
+        n_recommendations=n_recommendations
+    )
+
+    # 3) Берём исторические фильмы, которые пользователь уже оценил.
+    user_history = ratings_df[ratings_df["userId"] == user_id]["movieId"].tolist()
+
+    # 4) Считаем Accuracy как долю рекомендованных фильмов,
+    # попавших в те фильмы, которые пользователь посмотрел.
+    random_acc = accuracy(random_recs, user_history)
+    popular_acc = accuracy([rec[0] for rec in popular_recs], user_history)
+
+    return {
+        "random_accuracy": random_acc,
+        "popular_accuracy": popular_acc
+    }
+
 
 
 if __name__ == "__main__":
